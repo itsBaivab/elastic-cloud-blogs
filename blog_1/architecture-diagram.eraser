@@ -1,0 +1,34 @@
+direction right
+
+developer [icon: user, label: "Developer"]
+github_actions [icon: github-actions, label: "GitHub Actions"]
+github [icon: github, label: "GitHub"]
+argocd [icon: argo-cd, label: "Argocd"]
+
+aws_account {
+  label: "AWS Account"
+
+  eks_cluster {
+    label: "EKS Cluster"
+    icon: aws-eks
+
+    application [icon: aws-eks, label: "Application"]
+  }
+
+  elastic_marketplace {
+    label: "(Elastic) Marketplace"
+    icon: elastic
+
+    elasticsearch [icon: elasticsearch, label: ""]
+    agent_builder [icon: kibana, label: "Agent Builder"]
+    otel [icon: opentelemetry, label: "OTEL"]
+  }
+}
+
+// Connections
+developer > github: "code merge"
+github_actions > elasticsearch: "send event (index)"
+argocd > github: "poll"
+argocd > application: "deploy"
+application > otel: "send logs (index)"
+otel > elasticsearch
