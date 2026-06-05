@@ -106,11 +106,25 @@ One agentless integration — Elastic calls the GuardDuty API directly using an 
 
 In Kibana, navigate to **☰ → Stack Management → Security → API Keys → Create API key**.
 
-Name it `guardduty-integration` and click **Create API key**.
+Name it `guardduty-integration`, then expand **Control security privileges** and paste this JSON to scope the key to only what the integration needs:
+
+```json
+{
+  "indices": [
+    {
+      "names": ["logs-aws.guardduty-*", ".logs-aws.guardduty-*"],
+      "privileges": ["auto_configure", "create_doc"]
+    }
+  ],
+  "cluster": ["monitor"]
+}
+```
+
+This gives the key write access to GuardDuty log indices and basic cluster monitoring — nothing more.
 
 ![API key created in Kibana](images/elastic_api_key_created.png)
 
-Copy the encoded key immediately — it is shown only once.
+Click **Create API key** and copy the encoded value immediately — it is shown only once.
 
 ---
 
