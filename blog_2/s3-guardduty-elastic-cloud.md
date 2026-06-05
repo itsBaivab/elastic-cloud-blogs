@@ -405,9 +405,13 @@ aws guardduty list-detectors --region us-east-1 --query 'DetectorIds[0]' --outpu
 
 Or in the AWS Console: **GuardDuty → Settings** — the Detector ID is shown at the top of the page.
 
+Here is the fully populated form before clicking Save:
+
+![Kibana GuardDuty integration form — fully populated](images/kibana_guardduty_form_filled.png)
+
 ### 7c. Save and deploy
 
-Click **Save and deploy**. Within a minute you will see:
+Click **Save and continue**. Within a minute you will see:
 
 ![Agentless deployment successful](images/elastic_agentless_success.png)
 
