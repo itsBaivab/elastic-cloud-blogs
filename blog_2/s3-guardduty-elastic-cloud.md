@@ -313,7 +313,7 @@ aws iam put-user-policy \
           \"guardduty:GetDetector\",
           \"guardduty:ListDetectors\"
         ],
-        \"Resource\": \"arn:aws:guardduty:${REGION}:${ACCOUNT_ID}:detector/${DETECTOR_ID}\"
+        \"Resource\": \"*\"
       },
       {
         \"Sid\": \"ReadFindingsBucket\",
