@@ -27,7 +27,8 @@ One Elastic agentless integration calling the GuardDuty API directly — zero se
 - [Step 5: Export GuardDuty Findings to the S3 Bucket](#step-5-export-guardduty-findings-to-the-s3-bucket)
 - [Step 6: Create an SQS Queue for Notifications](#step-6-create-an-sqs-queue-for-notifications)
 - [Step 7: Create an IAM User for Elastic](#step-7-create-an-iam-user-for-elastic)
-- [Step 8: Configure the GuardDuty Integration in Kibana](#step-8-configure-the-guardduty-integration-in-kibana)
+- [Step 7: Configure the GuardDuty Integration in Kibana](#step-7-configure-the-guardduty-integration-in-kibana)
+- [Step 8: Generate Sample Findings to Test the Pipeline](#step-8-generate-sample-findings-to-test-the-pipeline)
 - [Step 9: Explore Findings in Kibana](#step-9-explore-findings-in-kibana)
 - [What findings to watch for](#what-findings-to-watch-for)
 - [FAQs](#faqs)
@@ -292,13 +293,28 @@ aws iam create-user --user-name elastic-guardduty-reader
 
 ### 6b. Attach the policy
 
+Because the integration polls the GuardDuty API directly, the IAM user needs GuardDuty read permissions in addition to S3/SQS access:
+
 ```bash
+DETECTOR_ID=$(aws guardduty list-detectors --region $REGION --query 'DetectorIds[0]' --output text)
+
 aws iam put-user-policy \
   --user-name elastic-guardduty-reader \
   --policy-name ElasticGuardDutyReadOnly \
   --policy-document "{
     \"Version\": \"2012-10-17\",
     \"Statement\": [
+      {
+        \"Sid\": \"GuardDutyAPIRead\",
+        \"Effect\": \"Allow\",
+        \"Action\": [
+          \"guardduty:GetFindings\",
+          \"guardduty:ListFindings\",
+          \"guardduty:GetDetector\",
+          \"guardduty:ListDetectors\"
+        ],
+        \"Resource\": \"arn:aws:guardduty:${REGION}:${ACCOUNT_ID}:detector/${DETECTOR_ID}\"
+      },
       {
         \"Sid\": \"ReadFindingsBucket\",
         \"Effect\": \"Allow\",
@@ -417,9 +433,27 @@ Click **Save and continue**. Within a minute you will see:
 
 ---
 
-## Step 8: Explore Findings in Kibana
+## Step 8: Generate Sample Findings to Test the Pipeline
 
-### 8a. Create a data view
+GuardDuty won't produce real findings immediately — it needs time to establish baselines. Use `create-sample-findings` to inject synthetic findings right now and verify data flows into Kibana:
+
+```bash
+DETECTOR_ID=$(aws guardduty list-detectors --region us-east-1 --query 'DetectorIds[0]' --output text)
+
+aws guardduty create-sample-findings \
+  --detector-id $DETECTOR_ID \
+  --region us-east-1
+
+echo "Sample findings injected — wait ~1 minute then check Kibana"
+```
+
+This creates ~40 sample findings covering all GuardDuty finding types. They are clearly marked as samples and will not trigger real alerts. Within 1 minute the agentless integration polls the API and findings appear in Kibana.
+
+---
+
+## Step 9: Explore Findings in Kibana
+
+### 9a. Create a data view
 
 Go to **☰ → Stack Management → Data Views → Create data view**.
 
@@ -429,7 +463,7 @@ Go to **☰ → Stack Management → Data Views → Create data view**.
 
 ![Create data view for GuardDuty findings](images/kibana_create_data_view.png)
 
-### 8b. Open Discover
+### 9b. Open Discover
 
 Go to **☰ → Discover**, select **GuardDuty Findings**, and set the time range to **Last 24 hours**.
 
