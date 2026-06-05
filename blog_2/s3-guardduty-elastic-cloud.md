@@ -4,6 +4,34 @@ Your S3 buckets hold your most sensitive data — database backups, user uploads
 
 The problem is GuardDuty findings stay inside the AWS console by default. This walkthrough ships them into Elastic Cloud so you can search, correlate, and alert across every finding from every account in one place — with no agent to manage.
 
+---
+
+## Why Elastic when GuardDuty already has a console?
+
+This is a fair question. The GuardDuty console does show you findings — so why add another tool?
+
+**GuardDuty is a detector, not an investigation platform.** It tells you something happened. Elastic is where you figure out what it means, how serious it is, and what else was going on at the same time.
+
+| Capability | GuardDuty Console | Elastic Cloud |
+|---|---|---|
+| View findings | Yes | Yes |
+| Search with custom queries | Basic filters only | Full KQL / ES\|QL |
+| Multiple AWS accounts in one view | No | Yes |
+| Correlate with app logs, VPC flow, k8s | No | Yes |
+| Custom dashboards | No | Yes |
+| AI-powered investigation assistant | No | Yes |
+| Alert to Slack, PagerDuty, email | Via EventBridge only | Built-in |
+| Retain findings beyond 90 days | **No — auto-deleted** | Yes, indefinitely |
+| Compliance audit trail | No | Yes |
+
+The 90-day limit is the critical one. **GuardDuty automatically purges findings older than 90 days.** If you get breached and need to investigate what happened 4 months ago — that data is gone from GuardDuty. In Elastic, it lives as long as you keep it.
+
+The other big reason: GuardDuty only sees AWS API activity. A real attack rarely stays in one layer. An attacker who compromises an S3 bucket probably also touched an EC2 instance, generated unusual application logs, or triggered a Kubernetes anomaly. GuardDuty sees its slice. Elastic sees everything — and lets you connect the dots across all of it in one search.
+
+**Think of it this way:** GuardDuty is the smoke detector. Elastic is the security operations center that receives the alarm, pulls the camera footage, checks who badged in, and decides whether to call the fire department.
+
+---
+
 ## What you will build
 
 ```
@@ -18,6 +46,8 @@ One Elastic agentless integration calling the GuardDuty API directly — zero se
 ---
 
 ## Table of contents
+
+- [Why Elastic when GuardDuty already has a console?](#why-elastic-when-guardduty-already-has-a-console)
 
 - [Prerequisites](#prerequisites)
 - [Step 1: Provision Elastic Cloud from AWS Marketplace](#step-1-provision-elastic-cloud-from-aws-marketplace)
