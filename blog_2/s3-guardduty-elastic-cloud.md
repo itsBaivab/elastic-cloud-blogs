@@ -8,13 +8,12 @@ The problem is GuardDuty findings stay inside the AWS console by default. This w
 
 ```
 Amazon GuardDuty (S3 Protection enabled)
-  └── Exports findings → S3 bucket
-        └── S3 event notification → SQS queue
-              └── Elastic GuardDuty Integration (agentless, polls SQS)
-                    └── Kibana: search findings, dashboards, alerts
+  └── Findings stored in GuardDuty
+        └── Elastic GuardDuty Integration (agentless, polls API every 1m)
+              └── Kibana: search findings, dashboards, alerts
 ```
 
-One SQS queue, one S3 export bucket, one Elastic integration — zero servers to run.
+One Elastic agentless integration calling the GuardDuty API directly — zero servers, zero agents, zero infrastructure to manage.
 
 ---
 
@@ -23,12 +22,13 @@ One SQS queue, one S3 export bucket, one Elastic integration — zero servers to
 - [Prerequisites](#prerequisites)
 - [Step 1: Provision Elastic Cloud from AWS Marketplace](#step-1-provision-elastic-cloud-from-aws-marketplace)
 - [Step 2: Generate an Elastic API Key](#step-2-generate-an-elastic-api-key)
-- [Step 3: Enable GuardDuty and S3 Protection](#step-3-enable-guardduty-and-s3-protection)
-- [Step 4: Export GuardDuty Findings to S3](#step-4-export-guardduty-findings-to-s3)
-- [Step 5: Create an SQS Queue for Notifications](#step-5-create-an-sqs-queue-for-notifications)
-- [Step 6: Create an IAM User for Elastic](#step-6-create-an-iam-user-for-elastic)
-- [Step 7: Configure the GuardDuty Integration in Kibana](#step-7-configure-the-guardduty-integration-in-kibana)
-- [Step 8: Explore Findings in Kibana](#step-8-explore-findings-in-kibana)
+- [Step 3: Create the Findings S3 Bucket](#step-3-create-the-findings-s3-bucket)
+- [Step 4: Enable GuardDuty and S3 Protection](#step-4-enable-guardduty-and-s3-protection)
+- [Step 5: Export GuardDuty Findings to the S3 Bucket](#step-5-export-guardduty-findings-to-the-s3-bucket)
+- [Step 6: Create an SQS Queue for Notifications](#step-6-create-an-sqs-queue-for-notifications)
+- [Step 7: Create an IAM User for Elastic](#step-7-create-an-iam-user-for-elastic)
+- [Step 8: Configure the GuardDuty Integration in Kibana](#step-8-configure-the-guardduty-integration-in-kibana)
+- [Step 9: Explore Findings in Kibana](#step-9-explore-findings-in-kibana)
 - [What findings to watch for](#what-findings-to-watch-for)
 - [FAQs](#faqs)
 
@@ -93,9 +93,70 @@ Copy the encoded key immediately — it is shown only once.
 
 ---
 
-## Step 3: Enable GuardDuty and S3 Protection
+## Step 3: Create the Findings S3 Bucket
 
-### 3a. Enable GuardDuty
+Before enabling GuardDuty, create the S3 bucket that will receive all exported findings. This bucket is the central store that Elastic reads from.
+
+```bash
+# Set your account ID and region
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGION=us-east-1
+FINDINGS_BUCKET="guardduty-findings-${ACCOUNT_ID}-${REGION}"
+
+echo "Creating bucket: $FINDINGS_BUCKET"
+
+# Create the bucket
+aws s3api create-bucket \
+  --bucket $FINDINGS_BUCKET \
+  --region $REGION
+
+# Block all public access
+aws s3api put-public-access-block \
+  --bucket $FINDINGS_BUCKET \
+  --public-access-block-configuration \
+    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+echo "Bucket ready: $FINDINGS_BUCKET"
+```
+
+Now allow GuardDuty to write findings into it:
+
+```bash
+aws s3api put-bucket-policy \
+  --bucket $FINDINGS_BUCKET \
+  --policy "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [
+      {
+        \"Sid\": \"AllowGuardDutyPutFindings\",
+        \"Effect\": \"Allow\",
+        \"Principal\": { \"Service\": \"guardduty.amazonaws.com\" },
+        \"Action\": \"s3:PutObject\",
+        \"Resource\": \"arn:aws:s3:::${FINDINGS_BUCKET}/*\",
+        \"Condition\": {
+          \"StringEquals\": { \"aws:SourceAccount\": \"${ACCOUNT_ID}\" }
+        }
+      },
+      {
+        \"Sid\": \"AllowGuardDutyGetBucketLocation\",
+        \"Effect\": \"Allow\",
+        \"Principal\": { \"Service\": \"guardduty.amazonaws.com\" },
+        \"Action\": \"s3:GetBucketLocation\",
+        \"Resource\": \"arn:aws:s3:::${FINDINGS_BUCKET}\"
+      }
+    ]
+  }"
+
+echo "Bucket policy applied — GuardDuty can now write to this bucket"
+```
+
+> **Placeholder:** Add a screenshot of the S3 bucket in the AWS console showing **Block Public Access: On** and the bucket policy applied.
+
+---
+
+## Step 4: Enable GuardDuty and S3 Protection
+
+### 4a. Enable GuardDuty
 
 ```bash
 # Enable GuardDuty in your region
@@ -104,7 +165,7 @@ aws guardduty create-detector \
   --region us-east-1 \
   --finding-publishing-frequency FIFTEEN_MINUTES
 
-# Note the detectorId — you will need it in Step 4
+# Save the detector ID — needed in the next steps
 DETECTOR_ID=$(aws guardduty list-detectors \
   --region us-east-1 \
   --query 'DetectorIds[0]' \
@@ -112,9 +173,9 @@ DETECTOR_ID=$(aws guardduty list-detectors \
 echo "Detector ID: $DETECTOR_ID"
 ```
 
-### 3b. Enable S3 Protection
+### 4b. Enable S3 Protection
 
-S3 Protection tells GuardDuty to watch your S3 buckets specifically — detecting policy misconfigurations, unusual access patterns, and data exfiltration attempts.
+S3 Protection instructs GuardDuty to monitor all API calls to your S3 buckets — detecting policy misconfigurations, unusual access patterns, and data exfiltration attempts.
 
 ```bash
 aws guardduty update-detector \
@@ -134,68 +195,20 @@ aws guardduty get-detector \
 
 ---
 
-## Step 4: Export GuardDuty Findings to S3
+## Step 5: Export GuardDuty Findings to the S3 Bucket
 
-GuardDuty can continuously export all findings to an S3 bucket. Elastic reads from that bucket.
-
-### 4a. Create the findings export bucket
+Now point GuardDuty at the bucket you created in Step 3 so it exports every finding automatically.
 
 ```bash
+# Use the same variables from Step 3
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REGION=us-east-1
 FINDINGS_BUCKET="guardduty-findings-${ACCOUNT_ID}-${REGION}"
+DETECTOR_ID=$(aws guardduty list-detectors \
+  --region $REGION \
+  --query 'DetectorIds[0]' \
+  --output text)
 
-aws s3api create-bucket \
-  --bucket $FINDINGS_BUCKET \
-  --region $REGION
-
-# Block all public access
-aws s3api put-public-access-block \
-  --bucket $FINDINGS_BUCKET \
-  --public-access-block-configuration \
-    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-
-echo "Findings bucket: $FINDINGS_BUCKET"
-```
-
-### 4b. Allow GuardDuty to write to the bucket
-
-```bash
-aws s3api put-bucket-policy \
-  --bucket $FINDINGS_BUCKET \
-  --policy "{
-    \"Version\": \"2012-10-17\",
-    \"Statement\": [
-      {
-        \"Sid\": \"AllowGuardDutyPutFindings\",
-        \"Effect\": \"Allow\",
-        \"Principal\": {
-          \"Service\": \"guardduty.amazonaws.com\"
-        },
-        \"Action\": \"s3:PutObject\",
-        \"Resource\": \"arn:aws:s3:::${FINDINGS_BUCKET}/*\",
-        \"Condition\": {
-          \"StringEquals\": {
-            \"aws:SourceAccount\": \"${ACCOUNT_ID}\"
-          }
-        }
-      },
-      {
-        \"Sid\": \"AllowGuardDutyGetBucketLocation\",
-        \"Effect\": \"Allow\",
-        \"Principal\": {
-          \"Service\": \"guardduty.amazonaws.com\"
-        },
-        \"Action\": \"s3:GetBucketLocation\",
-        \"Resource\": \"arn:aws:s3:::${FINDINGS_BUCKET}\"
-      }
-    ]
-  }"
-```
-
-### 4c. Configure GuardDuty to export findings
-
-```bash
 aws guardduty update-findings-export-settings \
   --detector-id $DETECTOR_ID \
   --region $REGION \
@@ -205,17 +218,21 @@ aws guardduty update-findings-export-settings \
     \"KmsKeyArn\": \"\"
   }" \
   --finding-publishing-frequency FIFTEEN_MINUTES
+
+echo "GuardDuty will now export findings to: $FINDINGS_BUCKET"
 ```
+
+**What `FIFTEEN_MINUTES` means:** GuardDuty batches new findings and pushes them to S3 every 15 minutes. You can change this to `ONE_HOUR` or `SIX_HOURS` to reduce S3 write costs if low latency is not a requirement.
 
 > **Placeholder:** Add a screenshot of the GuardDuty console → Settings → Findings export options showing the S3 bucket configured.
 
 ---
 
-## Step 5: Create an SQS Queue for Notifications
+## Step 6: Create an SQS Queue for Notifications
 
 Elastic polls SQS rather than listing the S3 bucket directly — this is more efficient and avoids missing findings during high-volume periods.
 
-### 5a. Create the queue
+### 6a. Create the queue
 
 ```bash
 QUEUE_URL=$(aws sqs create-queue \
@@ -324,6 +341,8 @@ Save the **KeyId** and **Secret** — you will enter them in Step 7.
 
 ## Step 7: Configure the GuardDuty Integration in Kibana
 
+### 7a. Open the integration
+
 1. In Kibana, go to **☰ → Add Observability data → Cloud → AWS → View collection**.
 
 ![Kibana Add Observability Data — Cloud provider selection](images/kibana_add_data_cloud.png)
@@ -336,22 +355,59 @@ Save the **KeyId** and **Secret** — you will enter them in Step 7.
 
 ![Amazon GuardDuty integration page in Kibana](images/kibana_guardduty_integration.png)
 
-4. Fill in the integration form:
-   - **Name**: `guardduty-s3`
-   - **Access Key ID**: from Step 6c
-   - **Secret Access Key**: from Step 6c
+### 7b. Fill in the integration form
+
+The form has several sections. Here is exactly what to enter in each field:
+
+**Integration settings**
+
+| Field | Value |
+|---|---|
+| Integration name | `guardduty-s3` |
+| Description | *(optional)* |
+
+**AWS credentials**
+
+| Field | Value | Where to get it |
+|---|---|---|
+| Access Key ID | `AKIAQSCIQUH6UTOF7RCT` | Created in Step 6c via `aws iam create-access-key` |
+| Secret Access Key | *(from Step 6c output)* | Shown once when key was created — save it immediately |
+| Session Token | *(leave blank)* | Only needed for temporary credentials via STS/AssumeRole |
 
 ![AWS credentials for the integration](images/elastic_aws_credentials.png)
 
-5. Under **Collect GuardDuty logs via**, select **S3 via SQS**. Enter:
-   - **Queue URL**: the SQS queue URL from Step 5a
-   - **Default AWS Region**: `us-east-1`
+> **Tip:** If you lost the secret key, you cannot retrieve it. Delete the old key with `aws iam delete-access-key --user-name elastic-guardduty-reader --access-key-id <KeyId>` and run `aws iam create-access-key` again to generate a new pair.
 
-6. Under **Deployment options**, select **Agentless (Beta)**.
+**Deployment options**
+
+Select **Agentless (Beta)** — this means Elastic manages the collector entirely; no EC2, no agent to install.
 
 ![Agentless deployment option](images/elastic_agentless_option.png)
 
-7. Click **Save and deploy**. Within a minute you will see:
+**Collect Amazon GuardDuty logs via API**
+
+Toggle this **ON**. This is the direct API collection mode — Elastic calls the GuardDuty `GetFindings` API on your behalf using the credentials above.
+
+| Field | Value | Where to get it |
+|---|---|---|
+| Interval | `1m` | How often Elastic polls for new findings. Keep at `1m` for near-real-time. |
+| Initial Interval | `24h` | How far back to pull findings on first run. `24h` backfills the last day. |
+| **Detector ID** | `18cf4c78b3244ce491e6e890fab91845` | See below ↓ |
+| **AWS Region** | `us-east-1` | The region where you enabled GuardDuty in Step 4 |
+| Preserve original event | OFF *(default)* | Turn ON only if you want the raw GuardDuty JSON preserved alongside the ECS-mapped fields |
+
+**How to find your Detector ID:**
+
+```bash
+aws guardduty list-detectors --region us-east-1 --query 'DetectorIds[0]' --output text
+# Output: 18cf4c78b3244ce491e6e890fab91845
+```
+
+Or in the AWS Console: **GuardDuty → Settings** — the Detector ID is shown at the top of the page.
+
+### 7c. Save and deploy
+
+Click **Save and deploy**. Within a minute you will see:
 
 ![Agentless deployment successful](images/elastic_agentless_success.png)
 
